@@ -14,24 +14,37 @@
  * CUDA Kernel Device code
  *
  */
+
 __global__ void applySimpleLinearBlurFilter(uchar *r, uchar *g, uchar *b)
 {
-    // Consider using shared memory for the purpose of keeping the original input values
-    // You can also use a constant array for handling edge cases or applying a custom filter
+    extern __shared__ uchar sharedRGB[];
 
-    if(threadId < num_image_pixels)
+    int threadId = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (threadId < d_rows * d_columns)
     {
-        // When using shared memory you should store pixel values relevant to the current thread in a variable
+        int currentPixel = threadId * 3; // Each pixel has 3 channels (RGB)
 
-        // sync threads so that you can alter RGB values without causing race condition
+        // Load current pixel and neighboring pixels into shared memory
+        sharedRGB[threadIdx.x * 3] = r[currentPixel];
+        sharedRGB[threadIdx.x * 3 + 1] = g[currentPixel];
+        sharedRGB[threadIdx.x * 3 + 2] = b[currentPixel];
+
+        // Ensure all threads have loaded data into shared memory
         __syncthreads();
 
-        
-        // Apply a simple filter that averages the RGB values to the left and right of the pixel at the current thread id location
-        // Another area for improvement is handling when the current thread is at the let or right edge of the imput image
+        // Apply a simple linear blur filter (3 pixels wide) to each channel (R, G, B)
+        if (threadIdx.x > 0 && threadIdx.x < blockDim.x - 1)
+        {
+            for (int i = 0; i < 3; ++i)
+            {
+                // Apply a simple average of neighboring pixel values
+                r[currentPixel + i] = (sharedRGB[(threadIdx.x - 1) * 3 + i] + sharedRGB[threadIdx.x * 3 + i] + sharedRGB[(threadIdx.x + 1) * 3 + i]) / 3;
+            }
+        }
     }
-
 }
+
 
 __host__ float compareColorImages(uchar *r0, uchar *g0, uchar *b0, uchar *r1, uchar *g1, uchar *b1, int rows, int columns)
 {
@@ -59,10 +72,14 @@ __host__ float compareColorImages(uchar *r0, uchar *g0, uchar *b0, uchar *r1, uc
     return scaledMeanDifferencePercentage;
 }
 
-__host__ void allocateDeviceMemory(int rows, int columns)
+__host__ void allocateDeviceMemory(int rows, int columns,uchar *r, uchar *g, uchar *b,int threadsPerBlock )
 {
 
-    //Allocate device constant symbols for rows and columns
+    // Calculate shared memory size needed for each block (3 * threadsPerBlock bytes)
+    int sharedMemorySize = 3 * threadsPerBlock * sizeof(uchar);
+
+    // Launch the CUDA kernel with shared memory
+    applySimpleLinearBlurFilter<<<(rows * columns + threadsPerBlock - 1) / threadsPerBlock, threadsPerBlock, sharedMemorySize>>>(r, g, b);
     cudaMemcpyToSymbol(d_rows, &rows, sizeof(int), 0, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(d_columns, &columns, sizeof(int), 0, cudaMemcpyHostToDevice);
 }
