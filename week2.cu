@@ -8,190 +8,186 @@
  * is strictly prohibited.
  *
  */
-#include "convertRGBToGrey.hpp"
+#include "search.h"
 
 /*
  * CUDA Kernel Device code
  *
+ * Search passed data set for a float value and if the value is at the thread index set the foundIndex value
  */
-__global__ void convert(uchar *d_r, uchar *d_g, uchar *d_b, uchar *d_gray)
+__global__ void search(int *d_d, int *d_i, int numElements)
 {
-    //To convert from RGB to grayscale, use the average of the values in d_r, d_g, d_b and place in d_gray
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
 
+    if (i < numElements)
+    {
+        if(d_d[i] == d_v)
+        {
+            atomicExch(d_i, i);
+        }
+    }
 }
 
-__host__ float compareGrayImages(uchar *gray, uchar *test_gray, int rows, int columns)
-{
-    cout << "Comparing actual and test grayscale pixel arrays\n";
-    int numImagePixels = rows * columns;
-    int imagePixelDifference = 0.0;
 
-    for(int r = 0; r < rows; ++r)
+
+__host__ int * allocateRandomHostMemory(int numElements)
+{
+    srand(time(0));
+    size_t size = numElements * sizeof(int);
+
+    // Allocate the host input vector A
+    int *h_d = (int *)malloc(size);
+
+    // Verify that allocations succeeded
+    if (h_d == NULL)
     {
-        for(int c = 0; c < columns; ++c)
-        {
-            uchar image0Pixel = gray[r*rows+c];
-            uchar image1Pixel = test_gray[r*rows+c];
-            imagePixelDifference += abs(image0Pixel - image1Pixel);
+        fprintf(stderr, "Failed to allocate host vectors!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Initialize the host input vectors
+    for (int i = 0; i < numElements; ++i)
+    {
+        h_d[i] = rand();
+    }
+
+    return h_d;
+}
+
+// Based heavily on https://www.gormanalysis.com/blog/reading-and-writing-csv-files-with-cpp/
+// Presumes that there is no header in the csv file
+__host__ std::tuple<int * , int>readCsv(std::string filename)
+{
+    std::vector<int> tempResult;
+    // Create an input filestream
+    std::ifstream myFile(filename);
+
+    // Make sure the file is open
+    if(!myFile.is_open()) throw std::runtime_error("Could not open file");
+
+    // Helper vars
+    std::string line, colname;
+    int val;
+
+    // Read data, line by line
+    while(std::getline(myFile, line))
+    {
+        // Create a stringstream of the current line
+        std::stringstream ss(line);
+        
+        // Extract each integer
+        while(ss >> val){
+            tempResult.push_back(val);
+            // If the next token is a comma, ignore it and move on
+            if(ss.peek() == ',') ss.ignore();
         }
     }
 
-    float meanImagePixelDifference = imagePixelDifference / numImagePixels;
-    float scaledMeanDifferencePercentage = (meanImagePixelDifference / 255);
-    printf("meanImagePixelDifference: %f scaledMeanDifferencePercentage: %f\n", meanImagePixelDifference, scaledMeanDifferencePercentage);
-    return scaledMeanDifferencePercentage;
+    // Close file
+    myFile.close();
+    int numElements = tempResult.size();
+    int result[numElements];
+    // Copy all elements of vector to array
+    std::copy(tempResult.begin(), tempResult.end(), result);
+
+    return {result, numElements};
 }
 
-__host__ std::tuple<uchar *, uchar *, uchar *, uchar *> allocateDeviceMemory(int rows, int columns)
+__host__ std::tuple<int *, int *> allocateDeviceMemory(int numElements)
 {
-    cout << "Allocating GPU device memory\n";
-    int num_image_pixels = rows * columns;
-    size_t size = num_image_pixels * sizeof(uchar);
-
-    // Allocate the device input vector d_r
-    uchar *d_r = NULL;
-    cudaError_t err = cudaMalloc(&d_r, size);
+    // Allocate the device input vector A
+    int *d_d = NULL;
+    size_t size = numElements * sizeof(int);
+    cudaError_t err = cudaMalloc(&d_d, size);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "Failed to allocate device vector d_r (error code %s)!\n", cudaGetErrorString(err));
+        fprintf(stderr, "Failed to allocate device vector d_d (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
 
-    // Allocate the device input vector d_g
-    uchar *d_g = NULL;
-    err = cudaMalloc(&d_g, size);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to allocate device vector d_g (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
+    int *d_i;
+    cudaMalloc((void**)&d_i, sizeof(int));
 
-    // Allocate the device input vector d_b
-    uchar *d_b = NULL;
-    err = cudaMalloc(&d_b, size);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to allocate device vector d_b (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-
-    // Allocate the device input vector d_gray
-    uchar *d_gray = NULL;
-    err = cudaMalloc(&d_gray, size);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to allocate device vector d_gray (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-
-    //Allocate device constant symbols for rows and columns
-    cudaMemcpyToSymbol(d_rows, &rows, sizeof(int), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_columns, &columns, sizeof(int), 0, cudaMemcpyHostToDevice);
-
-    return {d_r, d_g, d_b, d_gray};
+    return {d_d, d_i};
 }
 
-
-__host__ void copyFromHostToDevice(uchar *h_r, uchar *d_r, uchar *h_g, uchar *d_g, uchar *h_b, uchar *d_b, int rows, int columns)
+__host__ void copyFromHostToDevice(int h_v, int *h_d, int h_i, int *d_d, int *d_i, int numElements)
 {
-    cout << "Copying from Host to Device\n";
-    int num_image_pixels = rows * columns;
-    size_t size = num_image_pixels * sizeof(uchar);
+    size_t size = numElements * sizeof(int);
 
-    cudaError_t err;
-    err = cudaMemcpy(d_r, h_r, size, cudaMemcpyHostToDevice);
+    cudaError_t err = cudaMemcpy(d_d, h_d, size, cudaMemcpyHostToDevice);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "Failed to copy vector r from host to device (error code %s)!\n", cudaGetErrorString(err));
+        fprintf(stderr, "Failed to copy vector A from host to device (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
 
-    err = cudaMemcpy(d_g, h_g, size, cudaMemcpyHostToDevice);
+    err = cudaMemcpyToSymbol(d_v, &h_v, sizeof(int), 0, cudaMemcpyHostToDevice);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "Failed to copy vector g from host to device (error code %s)!\n", cudaGetErrorString(err));
+        fprintf(stderr, "Failed to copy constant int d_v from host to device (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
 
-    err = cudaMemcpy(d_b, h_b, size, cudaMemcpyHostToDevice);
+    err = cudaMemcpy(d_i, &h_i, sizeof(int), cudaMemcpyHostToDevice);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "Failed to copy vector b from host to device (error code %s)!\n", cudaGetErrorString(err));
+        fprintf(stderr, "Failed to copy int d_i from host to device (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
 }
 
-__host__ void executeKernel(uchar *d_r, uchar *d_g, uchar *d_b, uchar *d_gray, int rows, int columns, int threadsPerBlock)
+__host__ void executeKernel(int *d_d, int *d_i, int numElements, int threadsPerBlock)
 {
-    cout << "Executing kernel\n";
-    //Launch the convert CUDA Kernel
-    int blockZSize = 4; // Could consider making the block/grid and memory layout 3d mapped but for now just breaking up computation
-    int gridCols = min(columns/(threadsPerBlock*4),1);
-    dim3 grid(rows, gridCols, 1);
-    dim3 block(1, threadsPerBlock, blockZSize);
-
-    convert<<<grid, block>>>(d_r, d_g, d_b, d_gray);
+    // Launch the search CUDA Kernel
+    int blocksPerGrid =(numElements + threadsPerBlock - 1) / threadsPerBlock;
+    search<<<blocksPerGrid, threadsPerBlock>>>(d_d, d_i, numElements);
     cudaError_t err = cudaGetLastError();
 
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "Failed to launch convert kernel (error code %s)!\n", cudaGetErrorString(err));
+        fprintf(stderr, "Failed to launch vectorAdd kernel (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
 }
 
-__host__ void copyFromDeviceToHost(uchar *d_gray, uchar *gray, int rows, int columns)
+__host__ void copyFromDeviceToHost(int *d_i, int &h_i)
 {
-    cout << "Copying from Device to Host\n";
-    // Copy the device result int array in device memory to the host result int array in host memory.
-    size_t size = rows * columns * sizeof(uchar);
-
-    cudaError_t err = cudaMemcpy(gray, d_gray, size, cudaMemcpyDeviceToHost);
+    // Copy the device result int (found index) in device memory to the host result int
+    // in host memory.
+    cudaError_t err = cudaMemcpy(&h_i, d_i, sizeof(int), cudaMemcpyDeviceToHost);
 
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "Failed to copy array d_gray from device to host (error code %s)!\n", cudaGetErrorString(err));
+        fprintf(stderr, "Failed to copy int d_i from device to host (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
 }
+
 
 // Free device global memory
-__host__ void deallocateMemory(uchar *d_r, uchar *d_g, uchar *d_b, uchar *d_gray)
+__host__ void deallocateMemory(int *h_d, int *d_d, int *d_i)
 {
-    cout << "Deallocating GPU device memory\n";
-    cudaError_t err = cudaFree(d_r);
+
+    cudaError_t err = cudaFree(d_d);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "Failed to free device vector d_r (error code %s)!\n", cudaGetErrorString(err));
+        fprintf(stderr, "Failed to free device vector d_d (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
 
-    err = cudaFree(d_g);
+    err = cudaFree(d_i);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "Failed to free device vector d_g (error code %s)!\n", cudaGetErrorString(err));
+        fprintf(stderr, "Failed to free device int variable d_i (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
 
-    err = cudaFree(d_b);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to free device vector d_b (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-
-    err = cudaFree(d_gray);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to free device int variable d_image_num_pixels (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
 }
 
 // Reset the device and exit
 __host__ void cleanUpDevice()
 {
-    cout << "Cleaning CUDA device\n";
     // cudaDeviceReset causes the driver to clean up all state. While
     // not mandatory in normal operation, it is good practice.  It is also
     // needed to ensure correct operation when the application is being
@@ -206,143 +202,133 @@ __host__ void cleanUpDevice()
     }
 }
 
-__host__ std::tuple<std::string, std::string, std::string, int> parseCommandLineArguments(int argc, char *argv[])
+__host__ void outputToFile(std::string currentPartId, int *data, int numElements, int searchValue, int foundIndex)
 {
-    cout << "Parsing CLI arguments\n";
-    int threadsPerBlock = 256;
-    std::string inputImage = "sloth.png";
-    std::string outputImage = "grey-sloth.png";
-    std::string currentPartId = "test";
+	std::string outputFileName = "output-" + currentPartId + ".txt";
+	// NOTE: Do not remove this output to file statement as it is used to grade assignment,
+	// so it should be called by each thread
+	std::ofstream outputFile;
+	outputFile.open (outputFileName, std::ofstream::app);
 
-    for (int i = 1; i < argc; i++)
+    outputFile << "Data: ";
+    for (int i = 0; i < numElements; ++i)
+        outputFile << data[i] << " ";
+    outputFile << "\n";
+    outputFile << "Searching for value: " << searchValue << "\n";
+	outputFile << "Found Index: " << foundIndex << "\n";
+
+	outputFile.close();
+}
+
+__host__ std::tuple<int, int, std::string, int, std::string, bool> parseCommandLineArguments(int argc, char *argv[])
+{
+    int numElements = 10;
+    int h_v = -1;
+    int threadsPerBlock = 256;
+    std::string currentPartId = "test";
+    bool sortInputData = true;
+    std::string inputFilename = "NULL";
+
+    for(int i = 1; i < argc; i++)
     {
         std::string option(argv[i]);
         i++;
         std::string value(argv[i]);
-        if (option.compare("-i") == 0)
+        if(option.compare("-s") == 0)
         {
-            inputImage = value;
+            if(value == "false")
+            {
+                sortInputData = false;
+            }
         }
-        else if (option.compare("-o") == 0)
-        {
-            outputImage = value;
-        }
-        else if (option.compare("-t") == 0)
+        else if(option.compare("-t") == 0) 
         {
             threadsPerBlock = atoi(value.c_str());
         }
-        else if (option.compare("-p") == 0)
+        else if(option.compare("-n") == 0) 
+        {
+            numElements = atoi(value.c_str());
+        }
+        else if(option.compare("-v") == 0) 
+        {
+            h_v = atoi(value.c_str());
+        }
+        else if(option.compare("-f") == 0) 
+        {
+            inputFilename = value;
+        }
+        else if(option.compare("-p") == 0) 
         {
             currentPartId = value;
         }
     }
-    cout << "inputImage: " << inputImage << " outputImage: " << outputImage << " currentPartId: " << currentPartId << " threadsPerBlock: " << threadsPerBlock << "\n";
-    return {inputImage, outputImage, currentPartId, threadsPerBlock};
+
+    return {numElements, h_v, currentPartId, threadsPerBlock, inputFilename, sortInputData};
 }
 
-__host__ std::tuple<int, int, uchar *, uchar *, uchar *> readImageFromFile(std::string inputFile)
+__host__ std::tuple<int *, int, int> setUpSearchInput(std::string inputFilename, int numElements, int h_v, bool sortInputData)
 {
-    cout << "Reading Image From File\n";
-    Mat img = imread(inputFile, IMREAD_COLOR);
-    
-    const int rows = img.rows;
-    const int columns = img.cols;
-    const int channels = img.channels();
+    srand(time(0));
+    int *h_d;
 
-    cout << "Rows: " << rows << " Columns: " << columns << "\n";
-
-    uchar *h_r = (uchar *)malloc(sizeof(uchar) * rows * columns);
-    uchar *h_g = (uchar *)malloc(sizeof(uchar) * rows * columns);
-    uchar *h_b = (uchar *)malloc(sizeof(uchar) * rows * columns);
-    
-    for(int r = 0; r < rows; ++r)
+    if(inputFilename.compare("NULL") != 0)
     {
-        for(int c = 0; c < columns; ++c)
-        {
-            Vec3b intensity = img.at<Vec3b>(r, c);
-            uchar blue = intensity.val[0];
-            uchar green = intensity.val[1];
-            uchar red = intensity.val[2];
-            h_r[r*rows+c] = red;
-            h_g[r*rows+c] = green;
-            h_b[r*rows+c] = blue;
-        }
+        tuple<int *, int>csvData = readCsv(inputFilename);
+        h_d = get<0>(csvData);
+        numElements = get<1>(csvData);
+    }
+    else 
+    {
+        h_d = allocateRandomHostMemory(numElements);
     }
 
-    return {rows, columns, h_r, h_g, h_b};
-}
-
-__host__ uchar *cpuConvertToGray(std::string inputFile)
-{
-    cout << "CPU converting image file to grayscale\n";
-    Mat grayImage = imread(inputFile, IMREAD_GRAYSCALE);
-    const int rows = grayImage.rows;
-    const int columns = grayImage.cols;
-
-    uchar *gray = (uchar *)malloc(sizeof(uchar) * rows * columns);
-
-    for(int r = 0; r < rows; ++r)
+    if(sortInputData)
     {
-        for(int c = 0; c < columns; ++c)
-        {
-            gray[r*rows+c] = min(grayImage.at<uchar>(r, c), 254);
-        }
+        sort(h_d, h_d + numElements);
     }
 
-    return gray;
+    if(h_v == -1)
+    {
+        // Roll a 6-sided die if not a 6 generate from a random value in the input data otherwise pick a random value
+        int diceRoll = rand()%6;
+        h_v = diceRoll < 5 ? h_d[rand()%numElements] : rand();
+    }
+
+    return {h_d, numElements, h_v};
 }
 
+/*
+ * Host main routine
+ * -s true|false - sort data prior to search
+ * -n numElements - the number of elements of random data to create
+ * -v searchValue - the value to search for in the data
+ * -f inputFile - the file for non-random input data
+ * -p currentPartId - the Coursera Part ID
+ * -t threadsPerBlock - the number of threads to schedule for concurrent processing
+ */
 int main(int argc, char *argv[])
 {
-    std::tuple<std::string, std::string, std::string, int> parsedCommandLineArgsTuple = parseCommandLineArguments(argc, argv);
-    std::string inputImage = get<0>(parsedCommandLineArgsTuple);
-    std::string outputImage = get<1>(parsedCommandLineArgsTuple);
-    std::string currentPartId = get<2>(parsedCommandLineArgsTuple);
-    int threadsPerBlock = get<3>(parsedCommandLineArgsTuple);
-    try 
-    {
-        auto[rows, columns, h_r, h_g, h_b] = readImageFromFile(inputImage);
-        uchar *gray = (uchar *)malloc(sizeof(uchar) * rows * columns);
-        std::tuple<uchar *, uchar *, uchar *, uchar *> memoryTuple = allocateDeviceMemory(rows, columns);
-        uchar *d_r = get<0>(memoryTuple);
-        uchar *d_g = get<1>(memoryTuple);
-        uchar *d_b = get<2>(memoryTuple);
-        uchar *d_gray = get<3>(memoryTuple);
+    int h_i = -1;
+    int * h_d;
+    
+    auto[numElements, h_v, currentPartId, threadsPerBlock, inputFilename, sortInputData] = parseCommandLineArguments(argc, argv);
+    std::tuple<int *, int, int> searchInputTuple = setUpSearchInput(inputFilename, numElements, h_v, sortInputData);
 
-        copyFromHostToDevice(h_r, d_r, h_g, d_g, h_b, d_b, rows, columns);
+    h_d = get<0>(searchInputTuple);
+    numElements = get<1>(searchInputTuple);
+    h_v = get<2>(searchInputTuple);
 
-        executeKernel(d_r, d_g, d_b, d_gray, rows, columns, threadsPerBlock);
+    auto[d_d, d_i] = allocateDeviceMemory(numElements);
+    copyFromHostToDevice(h_v, h_d, h_i, d_d, d_i, numElements);
 
-        copyFromDeviceToHost(d_gray, gray, rows, columns);
-        deallocateMemory(d_r, d_g, d_b, d_gray);
-        cleanUpDevice();
+    executeKernel(d_d, d_i, numElements, threadsPerBlock);
 
-        Mat grayImageMat(rows, columns, CV_8UC1);
-        vector<int> compression_params;
-        compression_params.push_back(IMWRITE_PNG_COMPRESSION);
-        compression_params.push_back(9);
+    copyFromDeviceToHost(d_i, h_i);
+    outputToFile(currentPartId, h_d, numElements, h_v, h_i);
 
-        //cout << "Output gray intensities: ";
-        for(int r = 0; r < rows; ++r)
-        {
-            for(int c = 0; c < columns; ++c)
-            {
-                grayImageMat.at<uchar>(r,c) = gray[r*rows+c];
-            }
-        }
-        //cout << "\n";
+    
+    deallocateMemory(h_d, d_d, d_i);
 
-        imwrite(outputImage, grayImageMat, compression_params);
-
-        uchar *test_gray = cpuConvertToGray(inputImage);
-        
-        float scaledMeanDifferencePercentage = compareGrayImages(gray, test_gray, rows, columns) * 100;
-        cout << "Mean difference percentage: " << scaledMeanDifferencePercentage << "\n";
-    }
-    catch (Exception &error_)
-    {
-        cout << "Caught exception: " << error_.what() << endl;
-        return 1;
-    }
+    cleanUpDevice();
     return 0;
 }
